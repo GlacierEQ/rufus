@@ -1,7 +1,7 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
  * Standard User I/O Routines (logging, status, error, etc.)
- * Copyright © 2011-2025 Pete Batard <pete@akeo.ie>
+ * Copyright © 2011-2026 Pete Batard <pete@akeo.ie>
  * Copyright © 2020 Mattiwatti <mattiwatti@gmail.com>
  *
  * This program is free software: you can redistribute it and/or modify
@@ -365,18 +365,25 @@ char* GuidToString(const GUID* guid, BOOL bDecorated)
 	return guid_string;
 }
 
-GUID* StringToGuid(const char* str)
+GUID StringToGuid(const char* str)
 {
-	static GUID guid;
-
-	if (str == NULL) return NULL;
-	if (sscanf(str, "{%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}",
-		(uint32_t*)&guid.Data1, (uint32_t*)&guid.Data2, (uint32_t*)&guid.Data3,
-		(uint32_t*)&guid.Data4[0], (uint32_t*)&guid.Data4[1], (uint32_t*)&guid.Data4[2],
-		(uint32_t*)&guid.Data4[3], (uint32_t*)&guid.Data4[4], (uint32_t*)&guid.Data4[5],
-		(uint32_t*)&guid.Data4[6], (uint32_t*)&guid.Data4[7]) != 11)
-		return NULL;
-	return &guid;
+	GUID guid = { 0 };
+	uint32_t d1, d2, d3, b0, b1, b2, b3, b4, b5, b6, b7;
+	if (str != NULL && sscanf(str[0] == '{' ? &str[1] : str, "%8x-%4x-%4x-%2x%2x-%2x%2x%2x%2x%2x%2x",
+		&d1, &d2, &d3, &b0, &b1, &b2, &b3, &b4, &b5, &b6, &b7) == 11) {
+		guid.Data1 = d1;
+		guid.Data2 = (uint16_t)d2;
+		guid.Data3 = (uint16_t)d3;
+		guid.Data4[0] = (uint8_t)b0;
+		guid.Data4[1] = (uint8_t)b1;
+		guid.Data4[2] = (uint8_t)b2;
+		guid.Data4[3] = (uint8_t)b3;
+		guid.Data4[4] = (uint8_t)b4;
+		guid.Data4[5] = (uint8_t)b5;
+		guid.Data4[6] = (uint8_t)b6;
+		guid.Data4[7] = (uint8_t)b7;
+	}
+	return guid;
 }
 
 // Find upper power of 2
@@ -582,13 +589,13 @@ HANDLE CreateFileWithTimeout(LPCSTR lpFileName, DWORD dwDesiredAccess, DWORD dwS
 			CancelSynchronousIo(hThread);
 			switch (WaitForSingleObject(hThread, 30000)) {
 			case WAIT_TIMEOUT:
-				uprintf("File was not created within timeout duration");
+				uprintf("Could not open file or device within timeout duration");
 				break;
 			case WAIT_OBJECT_0:
-				uprintf("File creation aborted by user");
+				uprintf("Operation aborted by user");
 				break;
 			default:
-				uprintf("Error while waiting for file to ne created: %s", WindowsErrorString());
+				uprintf("Error while waiting for file or device to be opened: %s", WindowsErrorString());
 				break;
 			}
 			params.dwError = WAIT_TIMEOUT;
@@ -641,13 +648,14 @@ BOOL WriteFileWithRetry(HANDLE hFile, LPCVOID lpBuffer, DWORD nNumberOfBytesToWr
 		} else {
 			uprintf("Write error %s", WindowsErrorString());
 			LastWriteError = RUFUS_ERROR(GetLastError());
+			if (LastWriteError == RUFUS_ERROR(ERROR_DISK_FULL))
+				break;
 		}
 		// If we can't reposition for the next run, just abort
 		if (!readFilePointer)
 			break;
 		if (nTry < nNumRetries) {
 			uprintf("Retrying in %d seconds...", WRITE_TIMEOUT / 1000);
-			// TODO: Call GetProcessSearch() here?
 			Sleep(WRITE_TIMEOUT);
 		}
 	}

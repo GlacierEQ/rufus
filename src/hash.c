@@ -2159,6 +2159,22 @@ BOOL IsFileInDB(const char* path)
 	return FALSE;
 }
 
+BOOL FileMatchesHash(const char* path, const char* str)
+{
+	uint8_t hash[SHA256_HASHSIZE];
+	if (!HashFile(HASH_SHA256, path, hash))
+		return FALSE;
+	return (memcmp(hash, StringToHash(str), SHA256_HASHSIZE) == 0);
+}
+
+BOOL BufferMatchesHash(const uint8_t* buf, const size_t len, const char* str)
+{
+	uint8_t hash[SHA256_HASHSIZE];
+	if (!HashBuffer(HASH_SHA256, buf, len, hash))
+		return FALSE;
+	return (memcmp(hash, StringToHash(str), SHA256_HASHSIZE) == 0);
+}
+
 static BOOL IsRevokedBySbat(uint8_t* buf, uint32_t len)
 {
 	char* sbat = NULL, *version_str;
@@ -2198,8 +2214,11 @@ static BOOL IsRevokedBySbat(uint8_t* buf, uint32_t len)
 		if (entry.version == 0)
 			continue;
 		for (j = 0; sbat_entries[j].product != NULL; j++) {
-			if (strcmp(entry.product, sbat_entries[j].product) == 0 && entry.version < sbat_entries[j].version)
+			if (strcmp(entry.product, sbat_entries[j].product) == 0 && entry.version < sbat_entries[j].version) {
+				uprintf("  SBAT version for '%s' (%d) is lower than the current minimum SBAT version (%d)!",
+					entry.product, entry.version, sbat_entries[j].version);
 				return TRUE;
+			}
 		}
 	}
 
@@ -2306,8 +2325,11 @@ static BOOL IsRevokedBySvn(uint8_t* buf, uint32_t len)
 				svn_ver = (uint32_t*)RvaToPhysical(buf, rsrc_rva);
 				if (svn_ver != NULL) {
 					uuprintf("  SVN version: %d.%d", *svn_ver >> 16, *svn_ver & 0xffff);
-					if (*svn_ver < sbat_entries[i].version)
+					if (*svn_ver < sbat_entries[i].version) {
+						uprintf("  SVN version %d.%d is lower than required minimum SVN version %d.%d!",
+							*svn_ver >> 16, *svn_ver & 0xffff, sbat_entries[i].version >> 16, sbat_entries[i].version & 0xffff);
 						return TRUE;
+					}
 				}
 			} else {
 				uprintf("  Warning: Unexpected Secure Version Number size");
@@ -2394,42 +2416,43 @@ int IsBootloaderRevoked(uint8_t* buf, uint32_t len)
 	// Get the signer/issuer info
 	cert = GetPeSignatureData(buf);
 	r = GetIssuerCertificateInfo(cert, &info);
-	if (r == 0)
+	if (r == 0) {
 		uprintf("  (Unsigned Bootloader)");
-	else if (r > 0)
+	} else if (r > 0) {
 		uprintf("  Signed by '%s'", info.name);
+		// Only perform revocation checks on signed bootloaders
+		if (!PE256Buffer(buf, len, hash))
+			return -1;
+		// Check for UEFI DBX revocation
+		if (IsRevokedByDbx(hash, buf, len))
+			revoked = 1;
+		// Check for Microsoft SSP revocation
+		for (i = 0; revoked == 0 && i < pe256ssp_size * SHA256_HASHSIZE; i += SHA256_HASHSIZE)
+			if (memcmp(hash, &pe256ssp[i], SHA256_HASHSIZE) == 0)
+				revoked = 2;
+		// Check for Linux SBAT revocation
+		if (revoked == 0 && IsRevokedBySbat(buf, len))
+			revoked = 3;
+		// Check for Microsoft SVN revocation
+		if (revoked == 0 && IsRevokedBySvn(buf, len))
+			revoked = 4;
+		// Check for UEFI DBX certificate revocation
+		if (revoked == 0 && IsRevokedByCert(&info))
+			revoked = 5;
 
-	if (!PE256Buffer(buf, len, hash))
-		return -1;
-	// Check for UEFI DBX revocation
-	if (IsRevokedByDbx(hash, buf, len))
-		revoked = 1;
-	// Check for Microsoft SSP revocation
-	for (i = 0; revoked == 0 && i < pe256ssp_size * SHA256_HASHSIZE; i += SHA256_HASHSIZE)
-		if (memcmp(hash, &pe256ssp[i], SHA256_HASHSIZE) == 0)
-			revoked = 2;
-	// Check for Linux SBAT revocation
-	if (revoked == 0 && IsRevokedBySbat(buf, len))
-		revoked =  3;
-	// Check for Microsoft SVN revocation
-	if (revoked == 0 && IsRevokedBySvn(buf, len))
-		revoked = 4;
-	// Check for UEFI DBX certificate revocation
-	if (revoked == 0 && IsRevokedByCert(&info))
-		revoked = 5;
-
-	// If signed and not revoked, print the various Secure Boot "gotchas"
-	if (r > 0 && revoked == 0) {
-		if (strcmp(info.name, "Microsoft Windows Production PCA 2011") == 0) {
-			uprintf("  Note: This bootloader may fail Secure Boot validation on systems that");
-			uprintf("  have been updated to use the 'Windows UEFI CA 2023' certificate.");
-		} else if (strcmp(info.name, "Windows UEFI CA 2023") == 0) {
-			uprintf("  Note: This bootloader will fail Secure Boot validation on systems that");
-			uprintf("  have not been updated to use the latest Secure Boot certificates");
-		} else if (strcmp(info.name, "Microsoft Corporation UEFI CA 2011") == 0 ||
-			strcmp(info.name, "Microsoft UEFI CA 2023") == 0) {
-			uprintf("  Note: This bootloader may fail Secure Boot validation on *some* systems,");
-			uprintf("  unless you enable \"Microsoft 3rd-party UEFI CA\" in your 'BIOS'.");
+		// If signed and not revoked, print the various Secure Boot "gotchas"
+		if (revoked == 0) {
+			if (strcmp(info.name, "Microsoft Windows Production PCA 2011") == 0) {
+				uprintf("  Note: This bootloader may fail Secure Boot validation on systems that");
+				uprintf("  have been updated to use the 'Windows UEFI CA 2023' certificate.");
+			} else if (strcmp(info.name, "Windows UEFI CA 2023") == 0) {
+				uprintf("  Note: This bootloader will fail Secure Boot validation on systems that");
+				uprintf("  have not been updated to use the latest Secure Boot certificates");
+			} else if (strcmp(info.name, "Microsoft Corporation UEFI CA 2011") == 0 ||
+				strcmp(info.name, "Microsoft UEFI CA 2023") == 0) {
+				uprintf("  Note: This bootloader may fail Secure Boot validation on *some* systems,");
+				uprintf("  unless you enable \"Microsoft 3rd-party UEFI CA\" in your 'BIOS'.");
+			}
 		}
 	}
 
@@ -2568,22 +2591,25 @@ void UpdateMD5Sum(const char* dest_dir, const char* md5sum_name)
 	free(md5_data);
 }
 
-#if defined(_DEBUG) || defined(TEST) || defined(ALPHA)
-/* Convert a lowercase hex string to binary. Returned value must be freed */
-uint8_t* to_bin(const char* str)
+/* Convert an (unprefixed) hex string to hash binary. Non concurrent. */
+uint8_t* StringToHash(const char* str)
 {
+	static uint8_t ret[MAX_HASHSIZE];
 	size_t i, len = safe_strlen(str);
-	uint8_t val = 0, *ret = NULL;
+	uint8_t val = 0;
+	char c;
 
-	if ((len < 2) || (len % 2))
+	if_assert_fails(len / 2 == MD5_HASHSIZE || len / 2 == SHA1_HASHSIZE ||
+		len / 2 == SHA256_HASHSIZE || len / 2 == SHA512_HASHSIZE)
 		return NULL;
-	ret = malloc(len / 2);
-	if (ret == NULL)
-		return NULL;
+	memset(ret, 0, sizeof(ret));
 
 	for (i = 0; i < len; i++) {
 		val <<= 4;
-		val |= ((str[i] - '0') < 0xa) ? (str[i] - '0') : (str[i] - 'a' + 0xa);
+		c = tolower(str[i]);
+		if_assert_fails((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))
+			return NULL;
+		val |= ((c - '0') < 0xa) ? (c - '0') : (c - 'a' + 0xa);
 		if (i % 2)
 			ret[i / 2] = val;
 	}
@@ -2591,6 +2617,7 @@ uint8_t* to_bin(const char* str)
 	return ret;
 }
 
+#if defined(_DEBUG) || defined(TEST) || defined(ALPHA)
 const char test_msg[] = "Did you ever hear the tragedy of Darth Plagueis The Wise? "
 	"I thought not. It's not a story the Jedi would tell you. It's a Sith legend. "
 	"Darth Plagueis was a Dark Lord of the Sith, so powerful and so wise he could "
@@ -2638,7 +2665,7 @@ int TestHashes(void)
 	const uint32_t blocksize[HASH_MAX] = { MD5_BLOCKSIZE, SHA1_BLOCKSIZE, SHA256_BLOCKSIZE, SHA512_BLOCKSIZE };
 	const char* hash_name[4] = { "MD5   ", "SHA1  ", "SHA256", "SHA512" };
 	int i, j, errors = 0;
-	uint8_t hash[MAX_HASHSIZE], *hash_expected;
+	uint8_t hash[MAX_HASHSIZE];
 	size_t full_msg_len = strlen(test_msg);
 	char* msg = malloc(full_msg_len + 1);
 	if (msg == NULL)
@@ -2661,14 +2688,12 @@ int TestHashes(void)
 			if (i != 0)
 				memcpy(msg, test_msg, copy_msg_len[i]);
 			HashBuffer(j, msg, copy_msg_len[i], hash);
-			hash_expected = to_bin(test_hash[j][i]);
-			if (memcmp(hash, hash_expected, hash_count[j]) != 0) {
+			if (memcmp(hash, StringToHash(test_hash[j][i]), hash_count[j]) != 0) {
 				uprintf("Test %s %d: FAIL", hash_name[j], i);
 				errors++;
 			} else {
 				uprintf("Test %s %d: PASS", hash_name[j], i);
 			}
-			free(hash_expected);
 		}
 	}
 

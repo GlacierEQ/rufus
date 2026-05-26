@@ -1305,6 +1305,42 @@ char* replace_char(const char* src, const char c, const char* rep)
 }
 
 /*
+ * Replace all characters from string 'str' that are present in the array of chars 'rem'
+ * to the 'rep' character.
+ */
+void filter_chars(char* str, const char* rem, const char rep)
+{
+	char *p, *q;
+
+	if (str == NULL || rem == NULL)
+		return;
+	for (p = str; *p != '\0'; p++) {
+		for (q = (char*)rem; *q != '\0'; q++)
+			if (*p == *q)
+				*p = rep;
+	}
+}
+
+/*
+ * Trim all leadings and trailing whitespaces
+ */
+void trim(char* str)
+{
+	size_t l;
+	char* p;
+
+	if (str == NULL)
+		return;
+	l = strlen(str);
+	if (l < 1)
+		return;
+	while (isspace(str[l - 1]))
+		str[--l] = '\0';
+	for (p = str; *p != '\0' && isspace(*p); p++, l--);
+	memmove(str, p, l + 1);
+}
+
+/*
  * Remove all instances of substring 'sub' form string 'src.
  * The returned string is allocated and must be freed by the caller.
  */
@@ -1588,9 +1624,12 @@ sbat_entry_t* GetSbatEntries(char* sbatlevel)
 		return NULL;
 
 	num_entries = 1;
-	for (i = 0; sbatlevel[i] != '\0'; i++)
+	for (i = 0; sbatlevel[i] != '\0'; i++) {
 		if (sbatlevel[i] == '\n')
 			num_entries++;
+		if (sbatlevel[i] == '\r')
+			sbatlevel[i] = '\n';
+	}
 
 	sbat_list = calloc(num_entries + 1, sizeof(sbat_entry_t));
 	if (sbat_list == NULL)
@@ -1643,7 +1682,6 @@ sbat_entry_t* GetSbatEntries(char* sbatlevel)
  * Parse a list of SHA-1 certificate hexascii thumbprints.
  * List must be freed by the caller.
  */
-
 thumbprint_list_t* GetThumbprintEntries(char* thumbprints_txt)
 {
 	uint32_t i, j, num_entries;

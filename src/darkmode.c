@@ -84,15 +84,19 @@ BOOL GetDarkModeFromRegistry(void)
 	if (!IsAtLeastWin10() || IsHighContrast())
 		return FALSE;
 
-	if (ReadSettingBool(SETTING_DISABLE_DARK_MODE))
+	// 0 = follow system, 1 = dark mode always, anything else = light mode always
+	switch (ReadSetting32(SETTING_DARK_MODE)) {
+	case 0:
+		if (RegGetValueA(HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+			"AppsUseLightTheme", RRF_RT_REG_DWORD, NULL, &data, &size) == ERROR_SUCCESS)
+			// Dark mode is 0, light mode is 1
+			return (data == 0);
 		return FALSE;
-
-	if (RegGetValueA(HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-		"AppsUseLightTheme", RRF_RT_REG_DWORD, NULL, &data, &size) == ERROR_SUCCESS)
-		// Dark mode is 0, light mode is 1
-		return (data == 0);
-
-	return FALSE;
+	case 1:
+		return TRUE;
+	default:
+		return FALSE;
+	}
 }
 
 void InitDarkMode(HWND hWnd)
